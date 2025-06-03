@@ -1,11 +1,8 @@
-// EmotionRecognizerSentis.cs
-
 using UnityEngine;
 using Unity.Sentis;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using UnityEngine.InputSystem; // Keep for testing if needed, or remove if test logic is removed
 
 public class EmotionRecognizerSentis : MonoBehaviour
 {
@@ -22,17 +19,12 @@ public class EmotionRecognizerSentis : MonoBehaviour
 
     [Tooltip("根据训练时 label2id 映射顺序填写标签列表")]
     public List<string> id2label = new List<string> {
-        "anger","disgust","fear","guilt","joy","sadness","shame"
+        "anger","disgust","fear","happy","neutral","sadness"
     };
 
     private Dictionary<string, int> vocab;
     private int clsTokenId, sepTokenId, unkTokenId, padTokenId;
     private Worker worker;
-
-    // 修改事件，使其可以传递情绪和分数，如果需要的话。
-    // 或者，直接让 Speech2 调用 AnalyzeEmotion 并获取返回值。
-    // 为简化，这里暂时不修改事件，Speech2将直接使用AnalyzeEmotion的返回值。
-    // public event System.Action<string, float> OnTextSentimentRecognized; 
 
     void Start()
     {
@@ -45,22 +37,40 @@ public class EmotionRecognizerSentis : MonoBehaviour
         if (vocabAsset == null)
             throw new Exception("请在 Inspector 中为 vocabAsset 拖入 vocab.txt");
 
-        var lines = vocabAsset.text
-            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        vocab = new Dictionary<string, int>();
 
-        vocab = lines
-            .Select((word, idx) => new { word = word.Trim(), idx })
-            .ToDictionary(x => x.word, x => x.idx);
+        // 去掉开头和结尾的花括号
+        string cleanedText = vocabAsset.text.Trim().TrimStart('{').TrimEnd('}');
 
-        if (!vocab.TryGetValue("[CLS]", out clsTokenId))
-            throw new Exception("[CLS] 丢失于词汇表");
-        if (!vocab.TryGetValue("[SEP]", out sepTokenId))
-            throw new Exception("[SEP] 丢失于词汇表");
-        padTokenId = vocab.TryGetValue("[PAD]", out padTokenId) ? padTokenId : 0;
-        unkTokenId = vocab.TryGetValue("[UNK]", out unkTokenId) ? unkTokenId : padTokenId;
+        // 每个词条都是用逗号分隔的
+        var entries = cleanedText.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var entry in entries)
+        {
+            var parts = entry.Split(new[] { ':' }, 2);
+            if (parts.Length != 2)
+                continue;
+
+            string key = parts[0].Trim().Trim('"');
+            string value = parts[1].Trim();
+
+            if (int.TryParse(value, out int id))
+            {
+                vocab[key] = id;
+            }
+        }
+
+        if (!vocab.TryGetValue("<s>", out clsTokenId))
+            throw new Exception("<s> 丢失于词汇表");
+        if (!vocab.TryGetValue("</s>", out sepTokenId))
+            throw new Exception("</s> 丢失于词汇表");
+
+        padTokenId = vocab.TryGetValue("<pad>", out padTokenId) ? padTokenId : 1;
+        unkTokenId = vocab.TryGetValue("<unk>", out unkTokenId) ? unkTokenId : padTokenId;
 
         Debug.Log($"Loaded vocab ({vocab.Count} tokens): CLS={clsTokenId}, SEP={sepTokenId}, PAD={padTokenId}, UNK={unkTokenId}");
     }
+
 
     void CreateWorkerFromModelAsset()
     {
@@ -74,7 +84,7 @@ public class EmotionRecognizerSentis : MonoBehaviour
 
     List<int> Tokenize(string text, out List<int> attentionMask)
     {
-        text = text.ToLowerInvariant();
+        // RoBERTa 是大小写敏感的，所以不要强制 ToLower
         char[] splitChars = new[] { ' ', '，', '。', ',', '.', '!', '?', ';', ':', '"', '\'', '(', ')', '[', ']', '{', '}' };
         var tokens = text.Split(splitChars, StringSplitOptions.RemoveEmptyEntries);
 
@@ -107,7 +117,6 @@ public class EmotionRecognizerSentis : MonoBehaviour
         return ids;
     }
 
-    // 修改返回类型为 (string emotion, float score)
     public (string emotion, float score) AnalyzeEmotion(string text)
     {
         if (worker == null)
@@ -128,31 +137,13 @@ public class EmotionRecognizerSentis : MonoBehaviour
         using var tLogits = worker.PeekOutput("logits") as Tensor<float>;
         var logits = tLogits.DownloadToArray();
 
-        var probs = Softmax(logits);
-        int best = 0;
-        for (int i = 1; i < probs.Length; i++)
-        {
-            if (probs[i] > probs[best])
-            {
-                best = i;
-            }
-        }
-        // 或者使用 Linq (与原来保持一致):
-        // int best = probs
-        //     .Select((p, idx) => new { p, idx })
-        //     .OrderByDescending(x => x.p)
-        //     .First().idx;
+        logits[4] += logits[6]; // 合并 surprise 到 neutral
+        float[] mergedLogits = logits.Take(6).ToArray();
 
-
-        string label = best >= 0 && best < id2label.Count
-            ? id2label[best]
-            : "Unknown";
-
-        float bestScore = probs[best];
-
-        //Debug.Log($"输入: \"{text}\" → 文本情绪预测: {label} (Prob: {bestScore:P2})");
-        // OnTextSentimentRecognized?.Invoke(label, bestScore); // 如果需要事件，也应修改事件签名
-        return (label, bestScore); // 返回情绪和分数
+        var probs = Softmax(mergedLogits);
+        int best = Array.IndexOf(probs, probs.Max());
+        string label = best >= 0 && best < id2label.Count ? id2label[best] : "Unknown";
+        return (label, probs[best]);
     }
 
     float[] Softmax(float[] logits)
@@ -162,17 +153,6 @@ public class EmotionRecognizerSentis : MonoBehaviour
         float sum = exps.Sum();
         return exps.Select(e => e / sum).ToArray();
     }
-
-    // Update 方法中的测试代码可以按需保留或移除
-    // void Update()
-    // {
-    //     var kb = Keyboard.current;
-    //     if (kb != null && kb.spaceKey.wasPressedThisFrame)
-    //     {
-    //         AnalyzeEmotion("I am feeling very happy today!");
-    //         AnalyzeEmotion("This is so disappointing.");
-    //     }
-    // }
 
     void OnDestroy()
     {

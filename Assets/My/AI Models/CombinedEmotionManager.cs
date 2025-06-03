@@ -46,12 +46,13 @@ public class CombinedEmotionManager : MonoBehaviour
         if (combinedResultText != null)
         {
             combinedResultText.text = $"文本: \"{result.UtteranceText}\"\n" +
-                                      $"✍️ 文本情绪: {result.TextEmotion} (Score: {result.TextEmotionScore:P2})\n" +
-                                      $"🔊 语音情绪: {result.AudioEmotion} (Score: {result.AudioEmotionScore:F2})";
+                          $"✍️ 文本情绪: {result.TextEmotion} (Score: {result.TextEmotionScore:F2})\n" +
+                          $"🔊 语音情绪: {result.AudioEmotion} (Score: {result.AudioEmotionScore:F2})";
+
         }
 
         // 你也可以在这里进行其他逻辑处理，比如根据情绪结果改变角色行为等
-        Debug.Log($"[CombinedManager] Received Synced Emotion: Text='{result.TextEmotion}' ({result.TextEmotionScore:P2}), Audio='{result.AudioEmotion}' ({result.AudioEmotionScore:F2}) for '{result.UtteranceText}'");
+        Debug.Log($"[CombinedManager] Received Synced Emotion: Text='{result.TextEmotion}' ({result.TextEmotionScore:F2}), Audio='{result.AudioEmotion}' ({result.AudioEmotionScore:F2}) for '{result.UtteranceText}'");
     }
 
     // 原有的 HandleAudio 和 HandleText 以及 UpdateDisplay 可以移除了
